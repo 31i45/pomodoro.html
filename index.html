@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <title>番茄钟</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        html, body {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            overflow: hidden;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            position: relative;
+        }
+
+        .timer {
+            font-size: clamp(12vh, 18vw, 140px);
+            font-weight: 200;
+            letter-spacing: -2px; /* 收紧间距，增强紧凑感 */
+            line-height: 1;
+            margin-bottom: 20px;
+            font-variant-numeric: tabular-nums;
+            transition: color 0.3s cubic-bezier(0.4, 0, 0.2, 1); /* 丝滑颜色过渡 */
+        }
+
+        .label {
+            font-size: clamp(14px, 5vw, 22px);
+            opacity: 0.8;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            font-weight: 300;
+            margin-bottom: clamp(50px, 20vh, 100px);
+        }
+
+        .controls {
+            display: flex;
+            gap: clamp(20px, 6vw, 30px);
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.09);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: #fff;
+            padding: 16px clamp(24px, 10vw, 32px);
+            border-radius: 40px;
+            font-size: clamp(15px, 5vw, 20px);
+            cursor: pointer;
+            min-width: 110px;
+            backdrop-filter: blur(8px);
+            transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); /* 统一过渡曲线 */
+        }
+
+        .btn:active {
+            background: rgba(255, 255, 255, 0.18);
+            transform: scale(0.97); /* 更自然的按压反馈 */
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .hint {
+            position: absolute;
+            top: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.75);
+            color: #fff;
+            padding: 7px 14px;
+            border-radius: 18px;
+            font-size: 13px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+            pointer-events: none; /* 不干扰点击 */
+        }
+
+        .hint.show {
+            opacity: 1;
+        }
+
+        /* 模式颜色：情绪化设计（工作=专注白，休息=生机绿，长休息=平静蓝） */
+        .work { color: #ffffff; }
+        .rest { color: #58D68D; }
+        .long-rest { color: #5DADE2; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="hint" id="hint">双击进入全屏</div>
+        <div class="timer work" id="timer">25:00</div>
+        <div class="label" id="label">专注时间</div>
+        <div class="controls">
+            <button class="btn" id="start">开始</button>
+            <button class="btn" id="reset">重置</button>
+        </div>
+    </div>
+
+    <script>
+        // 核心元素：仅保留必要节点，变量名极致简洁
+        const timer = document.getElementById('timer');
+        const label = document.getElementById('label');
+        const startBtn = document.getElementById('start');
+        const resetBtn = document.getElementById('reset');
+        const hint = document.getElementById('hint');
+        const container = document.querySelector('.container');
+
+        // 配置：数值即逻辑，无需冗余注释
+        const WORK = 25 * 60;
+        const REST = 5 * 60;
+        const LONG_REST = 15 * 60;
+        const HINT_DURATION = 3000;
+        const VIBRATE = [120, 60, 120]; // 更明显的振动节奏
+
+        // 状态：最小化存储，仅保留核心变量
+        let time = WORK;
+        let isWorking = true;
+        let isLongRest = false;
+        let running = false;
+        let timerId = null;
+        let lastTime = performance.now();
+        let cycles = 0;
+        let showedHint = false;
+        let bgEnter = 0;
+
+        // 音频上下文：延迟初始化，减少启动负担
+        let audioCtx;
+        const initAudio = () => {
+            if (!audioCtx) {
+                try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+                catch (e) {}
+            }
+            if (audioCtx?.state === 'suspended') audioCtx.resume();
+        };
+
+        // 格式化：极致简洁，无多余计算
+        const fmt = s => {
+            const m = Math.floor(s / 60).toString().padStart(2, '0');
+            const sRem = (s % 60).toString().padStart(2, '0');
+            return `${m}:${sRem}`;
+        };
+
+        // 更新时间：直接操作DOM，减少中间变量
+        const updateTimer = () => timer.textContent = fmt(time);
+
+        // 更新模式：颜色与文本同步切换，无延迟
+        const updateMode = () => {
+            timer.className = `timer ${isWorking ? 'work' : isLongRest ? 'long-rest' : 'rest'}`;
+            label.textContent = isWorking ? '专注时间' : isLongRest ? '深度休息' : '小憩一下';
+        };
+
+        // 提示反馈：多感官同步，不突兀
+        const alert = () => {
+            // 振动：更清晰的节奏
+            if (navigator.vibrate) try { navigator.vibrate(VIBRATE); } catch (e) {}
+            // 声音：柔和不刺耳（440Hz=A4标准音）
+            if (audioCtx?.state === 'running') {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.value = 440;
+                osc.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.6);
+            }
+        };
+
+        // 全屏：无缝切换，无视觉闪烁
+        const toggleFull = () => {
+            const doc = document.documentElement;
+            const isFull = !!document.fullscreenElement || !!document.webkitFullscreenElement;
+            if (!isFull) {
+                if (doc.requestFullscreen) doc.requestFullscreen();
+                else if (doc.webkitRequestFullscreen) doc.webkitRequestFullscreen();
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+            }
+        };
+
+        // 模式切换：原子化操作，状态无歧义
+        const switchMode = () => {
+            if (isWorking) {
+                cycles++;
+                isWorking = false;
+                isLongRest = cycles % 4 === 0;
+                time = isLongRest ? LONG_REST : REST;
+            } else {
+                isWorking = true;
+                isLongRest = false;
+                time = WORK;
+            }
+            updateTimer();
+            updateMode();
+            lastTime = performance.now(); // 重置基准，零误差
+        };
+
+        // 计时循环：平滑如流水，无跳变
+        const loop = () => {
+            const now = performance.now();
+            const elapsed = Math.min(Math.floor((now - lastTime) / 1000), 1); // 强制每秒最多减1
+
+            if (elapsed) {
+                time = Math.max(0, time - elapsed);
+                lastTime = now;
+                updateTimer();
+
+                if (time === 0) {
+                    alert();
+                    switchMode();
+                    if (running) timerId = requestAnimationFrame(loop);
+                    return;
+                }
+            }
+
+            if (running) timerId = requestAnimationFrame(loop);
+        };
+
+        // 开始/暂停：状态切换零延迟
+        const toggle = () => {
+            running = !running;
+            startBtn.textContent = running ? '暂停' : '继续';
+            initAudio(); // 确保首次点击必解锁音频
+
+            if (running) {
+                loop();
+                if (!showedHint) {
+                    showedHint = true;
+                    hint.classList.add('show');
+                    setTimeout(() => hint.classList.remove('show'), HINT_DURATION);
+                }
+            } else if (timerId) {
+                cancelAnimationFrame(timerId);
+            }
+        };
+
+        // 重置：彻底回到初始状态，无残留
+        const reset = () => {
+            running = false;
+            if (timerId) {
+                cancelAnimationFrame(timerId);
+                timerId = null;
+            }
+            time = WORK;
+            isWorking = true;
+            isLongRest = false;
+            cycles = 0;
+            showedHint = false;
+            lastTime = performance.now();
+            bgEnter = 0;
+
+            startBtn.textContent = '开始';
+            updateTimer();
+            updateMode();
+            hint.classList.remove('show');
+        };
+
+        // 后台补偿：精准到毫秒，无感知衔接
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                bgEnter = performance.now();
+            } else if (running && bgEnter) {
+                const bgDur = Math.floor((performance.now() - bgEnter) / 1000);
+                time = Math.max(0, time - bgDur);
+                lastTime = performance.now();
+                updateTimer();
+                bgEnter = 0;
+            }
+        });
+
+        // 事件绑定：极简交互，无多余动作
+        startBtn.addEventListener('click', toggle);
+        resetBtn.addEventListener('click', reset);
+        container.addEventListener('dblclick', e => !e.target.closest('.controls') && toggleFull());
+
+        // 触摸防滚动：全屏时才生效，不干扰正常操作
+        let supportsPassive = false;
+        try { window.addEventListener('t', null, { get passive() { supportsPassive = true; return false; } }); } catch (e) {}
+        document.addEventListener('touchmove', e => {
+            if (document.fullscreenElement || document.webkitFullscreenElement) e.preventDefault();
+        }, { passive: !supportsPassive });
+
+        // 初始化：视觉即状态，无需加载动画
+        updateMode();
+    </script>
+</body>
+</html>
